@@ -1,47 +1,411 @@
+
 <!DOCTYPE html>
-<html><head><base target="_top"><meta name="viewport" content="width=device-width,initial-scale=1">
-<style>
-body{font-family:Arial,sans-serif;background:#f4f6fb;color:#061b4e;margin:0;padding:18px}
-main{max-width:440px;margin:auto;background:white;padding:22px;border-radius:16px;box-shadow:0 2px 18px #dde1ec}
-h1{font-size:23px;margin-top:0}input,select,button{box-sizing:border-box;width:100%;padding:12px;font-size:16px;margin:7px 0 12px;border-radius:7px;border:1px solid #bbb}
-button{background:#071d57;color:white;font-weight:700;border:none;cursor:pointer}button:disabled{opacity:.5}
-.card{background:#eef2fa;padding:12px;border-radius:9px;line-height:1.6}.ok{color:#187548;font-weight:bold}.bad{color:#b42424;font-weight:bold}
-small{color:#666}
-</style></head><body><main>
-<h1>Control de acceso · LBSB</h1><p>Graduación 8° Básicos 2026</p>
-<label>PIN de funcionario<input id="pin" type="password" autocomplete="off" placeholder="PIN de acceso"></label>
-<label>Funcionario<input id="staff" placeholder="Nombre o código del funcionario"></label>
-<button id="lookup" onclick="consultar()">Consultar cupos</button>
-<div class="card" id="data">Escanea el QR y autentícate para consultar. No se registra ningún ingreso automáticamente.</div>
-<label>Modalidad<select id="mode" onchange="cambiarModo()"><option value="1">Individual (1 persona)</option><option value="multi">Grupal</option></select></label>
-<label>Personas a ingresar<input id="qty" type="number" min="1" max="30" value="1" disabled></label>
-<button id="confirm" onclick="confirmar()" disabled>Confirmar ingreso</button>
-<p id="msg" role="status"></p><small>Si se pierde internet, no autorizar ingresos desde esta pantalla sin seguir el protocolo de contingencia.</small>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport"
+        content="width=device-width, initial-scale=1">
+  <title>Acceso Rápido QR - LBSB</title>
+
+  <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+
+  <style>
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      font-family: Arial, sans-serif;
+      background: #f0f3f9;
+      color: #102253;
+    }
+
+    header {
+      background: #102253;
+      color: white;
+      padding: 20px;
+      text-align: center;
+    }
+
+    header h2 { margin: 0 0 7px; }
+    header p { margin: 0; font-size: 13px; }
+
+    main {
+      max-width: 540px;
+      margin: 16px auto;
+      padding: 0 12px;
+    }
+
+    .panel {
+      background: white;
+      border-radius: 12px;
+      padding: 16px;
+      margin-bottom: 14px;
+      box-shadow: 0 2px 8px #00000012;
+    }
+
+    label {
+      display: block;
+      margin-bottom: 8px;
+      font-weight: bold;
+    }
+
+    select, button {
+      width: 100%;
+      padding: 13px;
+      border-radius: 8px;
+      font-size: 16px;
+    }
+
+    select {
+      background: white;
+      border: 1px solid #c7d0e2;
+    }
+
+    button {
+      background: #102253;
+      color: white;
+      border: none;
+      font-weight: bold;
+      cursor: pointer;
+      margin-top: 12px;
+    }
+
+    button:disabled { opacity: .5; }
+
+    #reader {
+      width: 100%;
+      overflow: hidden;
+      border-radius: 10px;
+      margin-top: 12px;
+    }
+
+    #estado {
+      padding: 15px;
+      border-radius: 9px;
+      background: #e7edf8;
+      line-height: 1.5;
+      font-weight: bold;
+    }
+
+    .ok {
+      background: #dcf6e5 !important;
+      color: #08652e;
+    }
+
+    .bad {
+      background: #ffe1e1 !important;
+      color: #9a1717;
+    }
+
+    .warn {
+      background: #fff1cf !important;
+      color: #795300;
+    }
+
+    .nota {
+      font-size: 12px;
+      color: #576276;
+      line-height: 1.5;
+    }
+  </style>
+</head>
+
+<body>
+
+<header>
+  <h2>Control de Acceso Rápido</h2>
+  <p>Liceo Bicentenario Simón Bolívar</p>
+  <p>Graduación 8° Básicos 2026</p>
+</header>
+
+<main>
+
+  <section class="panel">
+    <label for="cantidad">Personas que ingresan</label>
+    <select id="cantidad">
+      <option value="1">1 persona — Individual</option>
+      <option value="2">2 personas — Grupo</option>
+      <option value="3">3 personas — Grupo</option>
+      <option value="4">4 personas — Grupo</option>
+    </select>
+    <p class="nota">
+      Selecciona la cantidad antes de escanear.
+      Después de registrar un grupo, volverá a 1 persona.
+    </p>
+  </section>
+
+  <section class="panel">
+    <div id="estado">
+      Lector preparado. Presiona Activar cámara.
+    </div>
+
+    <button id="iniciar">Activar cámara</button>
+    <button id="detener" disabled>Detener cámara</button>
+
+    <div id="reader"></div>
+  </section>
+
+  <section class="panel">
+    <strong>Última lectura</strong>
+    <p id="ultimo">Todavía no se han realizado lecturas.</p>
+    <p class="nota">
+      El ingreso solo queda autorizado cuando
+      Google Sheets confirma el registro.
+    </p>
+  </section>
+
 </main>
+
 <script>
-const token = <?!= JSON.stringify(token) ?>;
-let last = null;
-const $ = id=>document.getElementById(id);
-const escapeHtml=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-function msg(text,good){$('msg').textContent=text;$('msg').className=good?'ok':'bad'}
-function cambiarModo(){if($('mode').value==='1'){$('qty').value=1;$('qty').disabled=true}else{$('qty').disabled=false}}
-function consultar(){
- $('lookup').disabled=true;$('confirm').disabled=true;msg('Consultando...',true);
- google.script.run.withSuccessHandler(r=>{
-  $('lookup').disabled=false;
-  if(!r.ok){last=null;$('data').textContent=r.mensaje;msg(r.mensaje,false);return;}
-  last=r;$('data').innerHTML='<b>Folio:</b> '+escapeHtml(r.folio)+'<br><b>Estudiante:</b> '+escapeHtml(r.estudiante)+'<br><b>Curso:</b> '+escapeHtml(r.curso)+'<br><b>Disponibles:</b> '+r.disponibles+' de '+r.cupos+'<br><b>Estado:</b> '+escapeHtml(r.estado);
-  $('confirm').disabled=r.estado.toLowerCase()!=='activo'||r.disponibles<=0;
-  msg(r.disponibles>0?'Consulta completada':'Sin cupos disponibles',r.disponibles>0);
- }).withFailureHandler(e=>{$('lookup').disabled=false;msg(e.message,false)}).datosEntrada(token,$('pin').value);
-}
-function confirmar(){
- const n=$('mode').value==='1'?1:Number($('qty').value);
- if(!last||!Number.isInteger(n)||n<1||n>last.disponibles){msg('Cantidad superior a los cupos disponibles',false);return}
- if(!confirm('¿Registrar '+n+' ingreso(s)? Esta acción descontará cupos.'))return;
- $('confirm').disabled=true;msg('Registrando ingreso...',true);
- google.script.run.withSuccessHandler(r=>{msg(r.mensaje+(r.disponibles!==undefined?' · Restantes: '+r.disponibles:''),r.ok);consultar();})
- .withFailureHandler(e=>{msg(e.message,false);$('confirm').disabled=false})
- .registrarIngreso(token,$('pin').value,n,$('staff').value);
-}
-</script></body></html>
+  const params = new URLSearchParams(location.search);
+  const canal = params.get('canal') || '';
+
+  const estado = document.getElementById('estado');
+  const ultimo = document.getElementById('ultimo');
+  const cantidad = document.getElementById('cantidad');
+  const iniciar = document.getElementById('iniciar');
+  const detener = document.getElementById('detener');
+
+  let lector = null;
+  let activo = false;
+  let ocupado = false;
+  let intentoPendiente = '';
+  let ultimoQR = '';
+  let ultimaLectura = 0;
+  let tiempoEspera = null;
+
+  function mensaje(texto, clase = '') {
+    estado.textContent = texto;
+    estado.className = clase;
+  }
+
+  function identificador() {
+    if (crypto.randomUUID) return crypto.randomUUID();
+
+    return Date.now().toString(36) + '-' +
+      Math.random().toString(36).slice(2);
+  }
+
+  function extraerToken(texto) {
+    const dato = String(texto || '').trim();
+
+    try {
+      const url = new URL(dato);
+
+      return url.searchParams.get('token') ||
+             url.searchParams.get('t') ||
+             '';
+    } catch (error) {
+      return /^[a-f0-9]{20,128}$/i.test(dato)
+        ? dato
+        : '';
+    }
+  }
+
+  function reanudar() {
+    ocupado = false;
+
+    if (lector && activo) {
+      try { lector.resume(); } catch (error) {}
+    }
+  }
+
+  function lectura(texto) {
+    if (ocupado) return;
+
+    const ahora = Date.now();
+
+    if (texto === ultimoQR &&
+        ahora - ultimaLectura < 3500) {
+      return;
+    }
+
+    const token = extraerToken(texto);
+
+    if (!token) {
+      mensaje('QR no válido para este sistema.', 'bad');
+      return;
+    }
+
+    if (!window.opener || !canal) {
+      mensaje(
+        'Abre el lector desde Acceso Rápido de Apps Script.',
+        'bad'
+      );
+      return;
+    }
+
+    ocupado = true;
+    ultimoQR = texto;
+    ultimaLectura = ahora;
+
+    intentoPendiente = identificador();
+
+    const personas = Number(cantidad.value);
+
+    try { lector.pause(true); } catch (error) {}
+
+    mensaje(
+      'QR leído. Registrando ' +
+      personas + ' ingreso(s)...',
+      'warn'
+    );
+
+    ultimo.textContent =
+      'Solicitud enviada. Esperando confirmación.';
+
+    window.opener.postMessage({
+      tipo: 'lectura',
+      id: identificador(),
+      canal: canal,
+      qr: texto,
+      cantidad: personas,
+      intentoId: intentoPendiente
+    }, '*');
+
+    clearTimeout(tiempoEspera);
+
+    tiempoEspera = setTimeout(function() {
+      mensaje(
+        'No se recibió confirmación. ' +
+        'Verifica Registros antes de volver a escanear.',
+        'bad'
+      );
+
+      ultimo.textContent =
+        'Resultado desconocido. No repetir el QR ' +
+        'hasta revisar Google Sheets.';
+
+      // No reanudamos automáticamente porque
+      // podría haberse registrado el ingreso.
+    }, 15000);
+  }
+
+  window.addEventListener('message', function(event) {
+    if (!window.opener || event.source !== window.opener) {
+      return;
+    }
+
+    const dato = event.data;
+
+    if (!dato ||
+        dato.tipo !== 'resultado' ||
+        dato.intentoId !== intentoPendiente) {
+      return;
+    }
+
+    clearTimeout(tiempoEspera);
+
+    if (dato.ok) {
+      mensaje(
+        'INGRESO AUTORIZADO. ' +
+        (dato.mensaje || ''),
+        'ok'
+      );
+
+      ultimo.textContent =
+        'Estudiante: ' + (dato.estudiante || '-') +
+        ' | Folio: ' + (dato.folio || '-') +
+        ' | Disponibles: ' + dato.disponibles;
+
+      cantidad.value = '1';
+    } else {
+      mensaje(
+        'INGRESO RECHAZADO. ' +
+        (dato.mensaje || 'No autorizado'),
+        'bad'
+      );
+
+      ultimo.textContent =
+        'No se descontaron cupos por esta lectura.';
+    }
+
+    setTimeout(reanudar, 1800);
+  });
+
+  iniciar.addEventListener('click', async function() {
+    if (activo) return;
+
+    if (!window.opener || !canal) {
+      mensaje(
+        'Para registrar ingresos debes abrir esta ' +
+        'pantalla desde Acceso Rápido de Apps Script.',
+        'warn'
+      );
+      return;
+    }
+
+    if (typeof Html5Qrcode === 'undefined') {
+      mensaje('No se pudo cargar la biblioteca QR.', 'bad');
+      return;
+    }
+
+    lector = new Html5Qrcode('reader');
+
+    try {
+      await lector.start(
+        { facingMode: 'environment' },
+        {
+          fps: 10,
+          qrbox: function(ancho, alto) {
+            const lado = Math.min(ancho, alto, 250);
+            return { width: lado, height: lado };
+          }
+        },
+        lectura,
+        function() {}
+      );
+
+      activo = true;
+
+      iniciar.disabled = true;
+      detener.disabled = false;
+
+      mensaje('Cámara activa. Escanea una invitación.');
+    } catch (error) {
+      mensaje(
+        'No se pudo iniciar la cámara: ' +
+        String(error),
+        'bad'
+      );
+    }
+  });
+
+  detener.addEventListener('click', async function() {
+    if (!lector || !activo) return;
+
+    if (ocupado) {
+      mensaje(
+        'Hay un registro pendiente. ' +
+        'Revisa su resultado antes de detener.',
+        'warn'
+      );
+      return;
+    }
+
+    try {
+      await lector.stop();
+
+      activo = false;
+
+      iniciar.disabled = false;
+      detener.disabled = true;
+
+      mensaje('Cámara detenida.');
+    } catch (error) {
+      mensaje('Error al detener: ' + error, 'bad');
+    }
+  });
+
+  if (!window.opener || !canal) {
+    mensaje(
+      'Lector publicado correctamente. ' +
+      'Para registrar ingresos, ábrelo desde ' +
+      'Acceso Rápido de Google Apps Script.',
+      'warn'
+    );
+  }
+</script>
+
+</body>
+</html>
