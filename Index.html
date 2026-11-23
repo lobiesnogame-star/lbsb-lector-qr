@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html><head><base target="_top"><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+body{font-family:Arial,sans-serif;background:#f4f6fb;color:#061b4e;margin:0;padding:18px}
+main{max-width:440px;margin:auto;background:white;padding:22px;border-radius:16px;box-shadow:0 2px 18px #dde1ec}
+h1{font-size:23px;margin-top:0}input,select,button{box-sizing:border-box;width:100%;padding:12px;font-size:16px;margin:7px 0 12px;border-radius:7px;border:1px solid #bbb}
+button{background:#071d57;color:white;font-weight:700;border:none;cursor:pointer}button:disabled{opacity:.5}
+.card{background:#eef2fa;padding:12px;border-radius:9px;line-height:1.6}.ok{color:#187548;font-weight:bold}.bad{color:#b42424;font-weight:bold}
+small{color:#666}
+</style></head><body><main>
+<h1>Control de acceso · LBSB</h1><p>Graduación 8° Básicos 2026</p>
+<label>PIN de funcionario<input id="pin" type="password" autocomplete="off" placeholder="PIN de acceso"></label>
+<label>Funcionario<input id="staff" placeholder="Nombre o código del funcionario"></label>
+<button id="lookup" onclick="consultar()">Consultar cupos</button>
+<div class="card" id="data">Escanea el QR y autentícate para consultar. No se registra ningún ingreso automáticamente.</div>
+<label>Modalidad<select id="mode" onchange="cambiarModo()"><option value="1">Individual (1 persona)</option><option value="multi">Grupal</option></select></label>
+<label>Personas a ingresar<input id="qty" type="number" min="1" max="30" value="1" disabled></label>
+<button id="confirm" onclick="confirmar()" disabled>Confirmar ingreso</button>
+<p id="msg" role="status"></p><small>Si se pierde internet, no autorizar ingresos desde esta pantalla sin seguir el protocolo de contingencia.</small>
+</main>
+<script>
+const token = <?!= JSON.stringify(token) ?>;
+let last = null;
+const $ = id=>document.getElementById(id);
+const escapeHtml=s=>String(s).replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+function msg(text,good){$('msg').textContent=text;$('msg').className=good?'ok':'bad'}
+function cambiarModo(){if($('mode').value==='1'){$('qty').value=1;$('qty').disabled=true}else{$('qty').disabled=false}}
+function consultar(){
+ $('lookup').disabled=true;$('confirm').disabled=true;msg('Consultando...',true);
+ google.script.run.withSuccessHandler(r=>{
+  $('lookup').disabled=false;
+  if(!r.ok){last=null;$('data').textContent=r.mensaje;msg(r.mensaje,false);return;}
+  last=r;$('data').innerHTML='<b>Folio:</b> '+escapeHtml(r.folio)+'<br><b>Estudiante:</b> '+escapeHtml(r.estudiante)+'<br><b>Curso:</b> '+escapeHtml(r.curso)+'<br><b>Disponibles:</b> '+r.disponibles+' de '+r.cupos+'<br><b>Estado:</b> '+escapeHtml(r.estado);
+  $('confirm').disabled=r.estado.toLowerCase()!=='activo'||r.disponibles<=0;
+  msg(r.disponibles>0?'Consulta completada':'Sin cupos disponibles',r.disponibles>0);
+ }).withFailureHandler(e=>{$('lookup').disabled=false;msg(e.message,false)}).datosEntrada(token,$('pin').value);
+}
+function confirmar(){
+ const n=$('mode').value==='1'?1:Number($('qty').value);
+ if(!last||!Number.isInteger(n)||n<1||n>last.disponibles){msg('Cantidad superior a los cupos disponibles',false);return}
+ if(!confirm('¿Registrar '+n+' ingreso(s)? Esta acción descontará cupos.'))return;
+ $('confirm').disabled=true;msg('Registrando ingreso...',true);
+ google.script.run.withSuccessHandler(r=>{msg(r.mensaje+(r.disponibles!==undefined?' · Restantes: '+r.disponibles:''),r.ok);consultar();})
+ .withFailureHandler(e=>{msg(e.message,false);$('confirm').disabled=false})
+ .registrarIngreso(token,$('pin').value,n,$('staff').value);
+}
+</script></body></html>
