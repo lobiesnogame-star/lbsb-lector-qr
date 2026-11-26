@@ -3,14 +3,15 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport"
-        content="width=device-width, initial-scale=1">
-  <title>Acceso Rápido QR - LBSB</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Control de Acceso Rápido - LBSB</title>
 
   <script src="https://cdn.jsdelivr.net/npm/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
 
   <style>
-    * { box-sizing: border-box; }
+    * {
+      box-sizing: border-box;
+    }
 
     body {
       margin: 0;
@@ -22,12 +23,19 @@
     header {
       background: #102253;
       color: white;
-      padding: 20px;
+      padding: 22px 12px;
       text-align: center;
     }
 
-    header h2 { margin: 0 0 7px; }
-    header p { margin: 0; font-size: 13px; }
+    header h2 {
+      margin: 0 0 8px;
+      font-size: 23px;
+    }
+
+    header p {
+      margin: 3px 0;
+      font-size: 13px;
+    }
 
     main {
       max-width: 540px;
@@ -67,10 +75,22 @@
       border: none;
       font-weight: bold;
       cursor: pointer;
-      margin-top: 12px;
+      margin-top: 10px;
     }
 
-    button:disabled { opacity: .5; }
+    button:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
+    .secundario {
+      background: #61718d;
+    }
+
+    .recuperar {
+      background: #946200;
+      display: none;
+    }
 
     #reader {
       width: 100%;
@@ -107,6 +127,16 @@
       color: #576276;
       line-height: 1.5;
     }
+
+    .detalle {
+      line-height: 1.6;
+      font-size: 14px;
+    }
+
+    .contador {
+      font-weight: bold;
+      font-size: 18px;
+    }
   </style>
 </head>
 
@@ -122,35 +152,62 @@
 
   <section class="panel">
     <label for="cantidad">Personas que ingresan</label>
+
     <select id="cantidad">
       <option value="1">1 persona — Individual</option>
       <option value="2">2 personas — Grupo</option>
       <option value="3">3 personas — Grupo</option>
       <option value="4">4 personas — Grupo</option>
     </select>
+
     <p class="nota">
       Selecciona la cantidad antes de escanear.
-      Después de registrar un grupo, volverá a 1 persona.
+      Después de confirmar un grupo, el selector
+      volverá automáticamente a una persona.
     </p>
   </section>
 
   <section class="panel">
+
     <div id="estado">
       Lector preparado. Presiona Activar cámara.
     </div>
 
     <button id="iniciar">Activar cámara</button>
-    <button id="detener" disabled>Detener cámara</button>
+
+    <button id="detener" class="secundario" disabled>
+      Detener cámara
+    </button>
+
+    <button id="recuperar" class="recuperar">
+      Recuperar lector después de verificar registro
+    </button>
 
     <div id="reader"></div>
+
   </section>
 
   <section class="panel">
     <strong>Última lectura</strong>
-    <p id="ultimo">Todavía no se han realizado lecturas.</p>
+
+    <p id="ultimo" class="detalle">
+      Todavía no se han realizado lecturas.
+    </p>
+
     <p class="nota">
-      El ingreso solo queda autorizado cuando
+      Los ingresos se autorizan únicamente cuando
       Google Sheets confirma el registro.
+    </p>
+  </section>
+
+  <section class="panel">
+    <strong>Ingresos confirmados en esta sesión</strong>
+
+    <p id="contador" class="contador">0</p>
+
+    <p class="nota">
+      Este contador es local al lector.
+      El registro oficial está en Google Sheets.
     </p>
   </section>
 
@@ -163,16 +220,28 @@
   const estado = document.getElementById('estado');
   const ultimo = document.getElementById('ultimo');
   const cantidad = document.getElementById('cantidad');
+
   const iniciar = document.getElementById('iniciar');
   const detener = document.getElementById('detener');
+  const recuperar = document.getElementById('recuperar');
+
+  const contador = document.getElementById('contador');
 
   let lector = null;
   let activo = false;
   let ocupado = false;
+
   let intentoPendiente = '';
   let ultimoQR = '';
-  let ultimaLectura = 0;
+  let ultimoToken = '';
+
+  let totalConfirmado = 0;
   let tiempoEspera = null;
+
+  // Mantiene protegido el último QR confirmado.
+  // Para leerlo nuevamente, se requiere desbloquearlo
+  // manualmente después de verificar el registro.
+  let tokenBloqueado = '';
 
   function mensaje(texto, clase = '') {
     estado.textContent = texto;
@@ -180,7 +249,12 @@
   }
 
   function identificador() {
-    if (crypto.randomUUID) return crypto.randomUUID();
+    if (
+      window.crypto &&
+      typeof window.crypto.randomUUID === 'function'
+    ) {
+      return window.crypto.randomUUID();
+    }
 
     return Date.now().toString(36) + '-' +
       Math.random().toString(36).slice(2);
@@ -195,6 +269,7 @@
       return url.searchParams.get('token') ||
              url.searchParams.get('t') ||
              '';
+
     } catch (error) {
       return /^[a-f0-9]{20,128}$/i.test(dato)
         ? dato
@@ -202,101 +277,136 @@
     }
   }
 
-  function reanudar() {
-    ocupado = false;
+  function bloquearPorSeguridad(texto) {
+    ocupado = true;
 
-    if (lector && activo) {
-      try { lector.resume(); } catch (error) {}
-    }
+    mensaje(texto, 'bad');
+
+    recuperar.style.display = 'block';
+
+    ultimo.textContent =
+      'Resultado pendiente de verificación. ' +
+      'Revisa la pestaña Registros en Google Sheets.';
+
+    cantidad.disabled = true;
+  }
+
+  function liberarLector() {
+    ocupado = false;
+    intentoPendiente = '';
+
+    recuperar.style.display = 'none';
+    cantidad.disabled = false;
   }
 
   function lectura(texto) {
+    // Evita solicitudes simultáneas.
     if (ocupado) return;
-
-    const ahora = Date.now();
-
-    if (texto === ultimoQR &&
-        ahora - ultimaLectura < 3500) {
-      return;
-    }
 
     const token = extraerToken(texto);
 
     if (!token) {
-      mensaje('QR no válido para este sistema.', 'bad');
+      mensaje(
+        'QR no válido para este sistema.',
+        'bad'
+      );
+      return;
+    }
+
+    // Impide descontar nuevamente el último QR.
+    if (token === tokenBloqueado) {
       return;
     }
 
     if (!window.opener || !canal) {
       mensaje(
-        'Abre el lector desde Acceso Rápido de Apps Script.',
+        'Abre el lector desde Acceso Rápido ' +
+        'de Google Apps Script.',
         'bad'
       );
       return;
     }
 
     ocupado = true;
+
     ultimoQR = texto;
-    ultimaLectura = ahora;
+    ultimoToken = token;
+
+    // Bloquear la relectura del mismo QR
+    // hasta disponer de un resultado verificado.
+    tokenBloqueado = token;
 
     intentoPendiente = identificador();
 
     const personas = Number(cantidad.value);
 
-    try { lector.pause(true); } catch (error) {}
+    if (
+      !Number.isInteger(personas) ||
+      personas < 1 ||
+      personas > 4
+    ) {
+      liberarLector();
+
+      mensaje(
+        'Cantidad de personas no válida.',
+        'bad'
+      );
+      return;
+    }
+
+    cantidad.disabled = true;
 
     mensaje(
-      'QR leído. Registrando ' +
+      'QR reconocido. Registrando ' +
       personas + ' ingreso(s)...',
       'warn'
     );
 
     ultimo.textContent =
-      'Solicitud enviada. Esperando confirmación.';
+      'Esperando confirmación de Google Sheets.';
 
-    window.opener.postMessage({
-      tipo: 'lectura',
-      id: identificador(),
-      canal: canal,
-      qr: texto,
-      cantidad: personas,
-      intentoId: intentoPendiente
-    }, '*');
+    // IMPORTANTE:
+    // No se utiliza lector.pause().
+    // La cámara permanece activa mientras
+    // el bloqueo ocupado evita nuevas solicitudes.
+
+    try {
+      window.opener.postMessage({
+        tipo: 'lectura',
+        id: identificador(),
+        canal: canal,
+        qr: texto,
+        cantidad: personas,
+        intentoId: intentoPendiente
+      }, '*');
+
+    } catch (error) {
+      bloquearPorSeguridad(
+        'No se pudo comunicar con Apps Script: ' +
+        error.message
+      );
+      return;
+    }
 
     clearTimeout(tiempoEspera);
 
     tiempoEspera = setTimeout(function() {
-      mensaje(
+      if (!ocupado) return;
+
+      bloquearPorSeguridad(
         'No se recibió confirmación. ' +
-        'Verifica Registros antes de volver a escanear.',
-        'bad'
+        'Verifica Google Sheets antes de continuar.'
       );
 
-      ultimo.textContent =
-        'Resultado desconocido. No repetir el QR ' +
-        'hasta revisar Google Sheets.';
-
-      // No reanudamos automáticamente porque
-      // podría haberse registrado el ingreso.
     }, 15000);
   }
 
-  window.addEventListener('message', function(event) {
-    if (!window.opener || event.source !== window.opener) {
-      return;
-    }
-
-    const dato = event.data;
-
-    if (!dato ||
-        dato.tipo !== 'resultado' ||
-        dato.intentoId !== intentoPendiente) {
-      return;
-    }
-
+  function procesarRespuesta(dato) {
     clearTimeout(tiempoEspera);
 
-    if (dato.ok) {
+    const fueAutorizado = Boolean(dato.ok);
+
+    if (fueAutorizado) {
       mensaje(
         'INGRESO AUTORIZADO. ' +
         (dato.mensaje || ''),
@@ -304,11 +414,27 @@
       );
 
       ultimo.textContent =
-        'Estudiante: ' + (dato.estudiante || '-') +
-        ' | Folio: ' + (dato.folio || '-') +
-        ' | Disponibles: ' + dato.disponibles;
+        'Estudiante: ' +
+        (dato.estudiante || '-') +
+        ' | Folio: ' +
+        (dato.folio || '-') +
+        ' | Disponibles: ' +
+        dato.disponibles;
 
+      const registrados = Number(dato.cantidad);
+
+      if (
+        Number.isInteger(registrados) &&
+        registrados > 0
+      ) {
+        totalConfirmado += registrados;
+      }
+
+      contador.textContent = String(totalConfirmado);
+
+      // Volver al modo individual.
       cantidad.value = '1';
+
     } else {
       mensaje(
         'INGRESO RECHAZADO. ' +
@@ -317,10 +443,41 @@
       );
 
       ultimo.textContent =
-        'No se descontaron cupos por esta lectura.';
+        'No se autorizó el ingreso. ' +
+        'Verifica el motivo en pantalla.';
     }
 
-    setTimeout(reanudar, 1800);
+    // No se pausa ni reanuda físicamente la cámara.
+    // Solo se libera el bloqueo lógico.
+    setTimeout(function() {
+      liberarLector();
+    }, 1200);
+  }
+
+  window.addEventListener('message', function(event) {
+    // Solo se aceptan respuestas de la ventana
+    // que abrió este lector.
+    if (
+      !window.opener ||
+      event.source !== window.opener
+    ) {
+      return;
+    }
+
+    const dato = event.data;
+
+    if (!dato || dato.tipo !== 'resultado') {
+      return;
+    }
+
+    if (
+      !ocupado ||
+      dato.intentoId !== intentoPendiente
+    ) {
+      return;
+    }
+
+    procesarRespuesta(dato);
   });
 
   iniciar.addEventListener('click', async function() {
@@ -328,15 +485,18 @@
 
     if (!window.opener || !canal) {
       mensaje(
-        'Para registrar ingresos debes abrir esta ' +
-        'pantalla desde Acceso Rápido de Apps Script.',
+        'Para registrar ingresos abre esta página ' +
+        'desde Acceso Rápido de Google Apps Script.',
         'warn'
       );
       return;
     }
 
     if (typeof Html5Qrcode === 'undefined') {
-      mensaje('No se pudo cargar la biblioteca QR.', 'bad');
+      mensaje(
+        'No se pudo cargar la biblioteca del lector QR.',
+        'bad'
+      );
       return;
     }
 
@@ -349,7 +509,11 @@
           fps: 10,
           qrbox: function(ancho, alto) {
             const lado = Math.min(ancho, alto, 250);
-            return { width: lado, height: lado };
+
+            return {
+              width: lado,
+              height: lado
+            };
           }
         },
         lectura,
@@ -361,7 +525,10 @@
       iniciar.disabled = true;
       detener.disabled = false;
 
-      mensaje('Cámara activa. Escanea una invitación.');
+      mensaje(
+        'Cámara activa. Escanea una invitación.'
+      );
+
     } catch (error) {
       mensaje(
         'No se pudo iniciar la cámara: ' +
@@ -376,8 +543,8 @@
 
     if (ocupado) {
       mensaje(
-        'Hay un registro pendiente. ' +
-        'Revisa su resultado antes de detener.',
+        'Existe un registro pendiente. ' +
+        'Verifica Google Sheets antes de detener.',
         'warn'
       );
       return;
@@ -392,19 +559,47 @@
       detener.disabled = true;
 
       mensaje('Cámara detenida.');
+
     } catch (error) {
-      mensaje('Error al detener: ' + error, 'bad');
+      mensaje(
+        'Error al detener cámara: ' +
+        String(error),
+        'bad'
+      );
     }
+  });
+
+  recuperar.addEventListener('click', function() {
+    const confirmado = window.confirm(
+      '¿Ya revisaste Google Sheets y comprobaste ' +
+      'si el último ingreso quedó registrado?\n\n' +
+      'Si no lo has comprobado, selecciona Cancelar.'
+    );
+
+    if (!confirmado) return;
+
+    clearTimeout(tiempoEspera);
+
+    // Se mantiene bloqueado el último token
+    // para evitar repetirlo por accidente.
+    liberarLector();
+
+    mensaje(
+      'Lector recuperado. Retira el último QR ' +
+      'y escanea una invitación diferente.',
+      'warn'
+    );
   });
 
   if (!window.opener || !canal) {
     mensaje(
       'Lector publicado correctamente. ' +
-      'Para registrar ingresos, ábrelo desde ' +
-      'Acceso Rápido de Google Apps Script.',
+      'Ábrelo desde Acceso Rápido de Apps Script ' +
+      'para registrar ingresos.',
       'warn'
     );
   }
+
 </script>
 
 </body>
